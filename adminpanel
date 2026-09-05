@@ -1,221 +1,498 @@
---// SERVER-SIDE ADMIN PANEL
---// Script -> ServerScriptService
---// Single script, fully server-authoritative.
+--// ADMIN PANEL
+--// LocalScript -> StarterPlayerScripts
 
 local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
-local TeleportService = game:GetService("TeleportService")
+
+local Player = Players.LocalPlayer
 
 --==================================================
 -- CONFIG
 --==================================================
 
--- Add UserIds here for hardcoded admins (optional — only used if RESTRICT_ADMINS is true)
-local ADMIN_USERIDS = {
-	-- [123456789] = true,
+local OPEN_ON_START = true
+
+local ADMINS = {
+	[Player.UserId] = true,
 }
 
--- OR grant admin via a group + minimum rank (set GROUP_ID to 0 to disable)
-local ADMIN_GROUP_ID = 0
-local ADMIN_MIN_RANK = 200
-
--- Set this to true once you've filled in ADMIN_USERIDS / the group settings above.
--- While false, EVERY player who joins gets the panel — fine for solo testing in
--- Studio, but flip this on before publishing so randoms can't kick/ban/god-mode
--- everyone in your game.
-local RESTRICT_ADMINS = false
-
-local function isAdmin(player)
-	if not RESTRICT_ADMINS then
-		return true
-	end
-	if ADMIN_USERIDS[player.UserId] then
-		return true
-	end
-	if ADMIN_GROUP_ID ~= 0 then
-		local ok, rank = pcall(function()
-			return player:GetRankInGroup(ADMIN_GROUP_ID)
-		end)
-		if ok and rank >= ADMIN_MIN_RANK then
-			return true
-		end
-	end
-	return false
+if not ADMINS[Player.UserId] then
+	return
 end
+
+--==================================================
+-- CHARACTER
+--==================================================
+
+local Character
+local Humanoid
+local Root
+
+local function getCharacter()
+	Character = Player.Character or Player.CharacterAdded:Wait()
+	Humanoid = Character:WaitForChild("Humanoid")
+	Root = Character:WaitForChild("HumanoidRootPart")
+end
+
+getCharacter()
+
+Player.CharacterAdded:Connect(function()
+	task.wait(0.2)
+	getCharacter()
+end)
 
 --==================================================
 -- STATE
 --==================================================
 
--- Per-player state tables, keyed by Player instance
-local PlayerState = {} -- [Player] = { frozen, god, noclip, fly, muted, walkspeed, jumppower }
+local FlyEnabled = false
+local NoclipEnabled = false
+local InfiniteJumpEnabled = false
+local SpeedEnabled = false
+local HighJumpEnabled = false
+local ESPEnabled = false
+local FullbrightEnabled = false
+local SpinEnabled = false
+local BigHeadEnabled = false
 
-local MutedPlayers = {} -- [UserId] = true
-local BannedUserIds = {} -- [UserId] = { reason = "...", by = "AdminName" } (session-only; use DataStore for persistence)
-
-local function getState(player)
-	if not PlayerState[player] then
-		PlayerState[player] = {
-			frozen = false,
-			god = false,
-			noclip = false,
-			fly = false,
-			muted = false,
-			walkspeed = 16,
-			jumppower = 50,
-		}
-	end
-	return PlayerState[player]
-end
+local ESPObjects = {}
 
 --==================================================
--- CHARACTER HELPERS
+-- GUI
 --==================================================
 
-local function getParts(character)
-	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-	local root = character and character:FindFirstChild("HumanoidRootPart")
-	return humanoid, root
-end
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "AdminPanel"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = Player:WaitForChild("PlayerGui")
 
-local function healPlayer(player)
-	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		humanoid.Health = humanoid.MaxHealth
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.fromOffset(700, 450)
+Main.Position = UDim2.new(0.5, -350, 0.5, -225)
+Main.BackgroundColor3 = Color3.fromRGB(17, 17, 23)
+Main.BorderSizePixel = 0
+Main.Visible = OPEN_ON_START
+Main.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 10)
+MainCorner.Parent = Main
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(70, 70, 90)
+MainStroke.Thickness = 1
+MainStroke.Parent = Main
+
+--==================================================
+-- TITLE BAR
+--==================================================
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 55)
+TitleBar.BackgroundColor3 = Color3.fromRGB(23, 23, 31)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = Main
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -70, 1, 0)
+Title.Position = UDim2.fromOffset(20, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "ADMIN // CONTROL"
+Title.TextColor3 = Color3.fromRGB(240, 240, 245)
+Title.TextSize = 19
+Title.Font = Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TitleBar
+
+local CloseButton = Instance.new("TextButton")
+CloseButton.Size = UDim2.fromOffset(40, 40)
+CloseButton.Position = UDim2.new(1, -48, 0, 7)
+CloseButton.BackgroundColor3 = Color3.fromRGB(38, 38, 48)
+CloseButton.BorderSizePixel = 0
+CloseButton.Text = "X"
+CloseButton.TextColor3 = Color3.fromRGB(230, 230, 235)
+CloseButton.TextSize = 14
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.Parent = TitleBar
+
+Instance.new("UICorner", CloseButton).CornerRadius = UDim.new(0, 7)
+
+CloseButton.MouseButton1Click:Connect(function()
+	Main.Visible = false
+end)
+
+--==================================================
+-- DRAG
+--==================================================
+
+local dragging = false
+local dragStart
+local startPosition
+
+TitleBar.InputBegan:Connect(function(input)
+
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = true
+		dragStart = input.Position
+		startPosition = Main.Position
 	end
-end
+end)
 
-local function killPlayer(player)
-	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		humanoid.Health = 0
+TitleBar.InputEnded:Connect(function(input)
+
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = false
 	end
-end
+end)
 
-local function kickPlayer(player, reason)
-	player:Kick("[ADMIN] Kicked. Reason: " .. (reason or "No reason given"))
-end
+UserInputService.InputChanged:Connect(function(input)
 
-local function banPlayer(player, reason, adminName)
-	BannedUserIds[player.UserId] = { reason = reason or "No reason given", by = adminName }
-	player:Kick("[ADMIN] Banned. Reason: " .. (reason or "No reason given"))
-end
+	if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
 
-local function freezePlayer(player, frozen)
-	local state = getState(player)
-	state.frozen = frozen
-	local humanoid, root = getParts(player.Character)
-	if humanoid then
-		humanoid.WalkSpeed = frozen and 0 or state.walkspeed
-		humanoid.JumpPower = frozen and 0 or state.jumppower
+		local delta = input.Position - dragStart
+
+		Main.Position = UDim2.new(
+			startPosition.X.Scale,
+			startPosition.X.Offset + delta.X,
+
+			startPosition.Y.Scale,
+			startPosition.Y.Offset + delta.Y
+		)
 	end
-	if root then
-		root.Anchored = frozen
-	end
-end
+end)
 
-local function setGod(player, enabled)
-	local state = getState(player)
-	state.god = enabled
-	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		humanoid.MaxHealth = enabled and math.huge or 100
-		if enabled then
-			humanoid.Health = humanoid.MaxHealth
-		else
-			humanoid.MaxHealth = 100
-			humanoid.Health = 100
+--==================================================
+-- SIDEBAR
+--==================================================
+
+local Sidebar = Instance.new("Frame")
+Sidebar.Size = UDim2.fromOffset(155, 375)
+Sidebar.Position = UDim2.fromOffset(15, 65)
+Sidebar.BackgroundColor3 = Color3.fromRGB(22, 22, 29)
+Sidebar.BorderSizePixel = 0
+Sidebar.Parent = Main
+
+Instance.new("UICorner", Sidebar).CornerRadius = UDim.new(0, 8)
+
+local SidebarPadding = Instance.new("UIPadding")
+SidebarPadding.PaddingTop = UDim.new(0, 10)
+SidebarPadding.PaddingLeft = UDim.new(0, 10)
+SidebarPadding.PaddingRight = UDim.new(0, 10)
+SidebarPadding.Parent = Sidebar
+
+local SidebarLayout = Instance.new("UIListLayout")
+SidebarLayout.Padding = UDim.new(0, 6)
+SidebarLayout.Parent = Sidebar
+
+--==================================================
+-- CONTENT
+--==================================================
+
+local Content = Instance.new("ScrollingFrame")
+Content.Size = UDim2.fromOffset(505, 375)
+Content.Position = UDim2.fromOffset(180, 65)
+Content.BackgroundColor3 = Color3.fromRGB(22, 22, 29)
+Content.BorderSizePixel = 0
+Content.ScrollBarThickness = 5
+Content.CanvasSize = UDim2.fromOffset(0, 0)
+Content.Parent = Main
+
+Instance.new("UICorner", Content).CornerRadius = UDim.new(0, 8)
+
+local ContentPadding = Instance.new("UIPadding")
+ContentPadding.PaddingTop = UDim.new(0, 10)
+ContentPadding.PaddingBottom = UDim.new(0, 10)
+ContentPadding.PaddingLeft = UDim.new(0, 10)
+ContentPadding.PaddingRight = UDim.new(0, 10)
+ContentPadding.Parent = Content
+
+local ContentLayout = Instance.new("UIListLayout")
+ContentLayout.Padding = UDim.new(0, 7)
+ContentLayout.Parent = Content
+
+ContentLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+
+	Content.CanvasSize = UDim2.fromOffset(
+		0,
+		ContentLayout.AbsoluteContentSize.Y + 25
+	)
+end)
+
+--==================================================
+-- HELPERS
+--==================================================
+
+local function clearContent()
+
+	for _, object in ipairs(Content:GetChildren()) do
+
+		if not object:IsA("UIListLayout")
+			and not object:IsA("UIPadding") then
+
+			object:Destroy()
 		end
 	end
 end
 
-local function setNoclip(player, enabled)
-	getState(player).noclip = enabled
+local function makeButton(text, callback)
+
+	local Button = Instance.new("TextButton")
+
+	Button.Size = UDim2.new(1, -5, 0, 40)
+	Button.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+	Button.BorderSizePixel = 0
+
+	Button.Text = text
+	Button.TextColor3 = Color3.fromRGB(235, 235, 240)
+	Button.TextSize = 13
+	Button.Font = Enum.Font.GothamMedium
+
+	Button.Parent = Content
+
+	Instance.new("UICorner", Button).CornerRadius = UDim.new(0, 6)
+
+	Button.MouseEnter:Connect(function()
+		Button.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
+	end)
+
+	Button.MouseLeave:Connect(function()
+		Button.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+	end)
+
+	Button.MouseButton1Click:Connect(callback)
+
+	return Button
 end
 
-local function setSpeed(player, value)
-	getState(player).walkspeed = value
-	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		humanoid.WalkSpeed = value
+local function makeToggle(text, initial, callback)
+
+	local enabled = initial
+
+	local Button = Instance.new("TextButton")
+
+	Button.Size = UDim2.new(1, -5, 0, 40)
+	Button.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+	Button.BorderSizePixel = 0
+
+	Button.TextColor3 = Color3.fromRGB(235, 235, 240)
+	Button.TextSize = 13
+	Button.Font = Enum.Font.GothamMedium
+
+	Button.Parent = Content
+
+	Instance.new("UICorner", Button).CornerRadius = UDim.new(0, 6)
+
+	local function update()
+
+		Button.Text = text .. "     [" ..
+			(enabled and "ON" or "OFF") ..
+			"]"
+
+		if enabled then
+			Button.BackgroundColor3 = Color3.fromRGB(45, 75, 52)
+		else
+			Button.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+		end
 	end
+
+	update()
+
+	Button.MouseButton1Click:Connect(function()
+
+		enabled = not enabled
+
+		update()
+		callback(enabled)
+	end)
+
+	return Button
 end
 
-local function setJump(player, value)
-	getState(player).jumppower = value
-	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		humanoid.UseJumpPower = true
-		humanoid.JumpPower = value
-	end
-end
+local function makeSection(text)
 
-local function teleportPlayerToPlayer(playerToMove, destinationPlayer)
-	local _, root = getParts(playerToMove.Character)
-	local _, destRoot = getParts(destinationPlayer.Character)
-	if root and destRoot then
-		root.CFrame = destRoot.CFrame * CFrame.new(0, 0, 4)
-	end
-end
+	local Label = Instance.new("TextLabel")
 
-local function ragdoll(player)
-	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
-		task.delay(3, function()
-			if humanoid and humanoid.Parent then
-				humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
-			end
-		end)
-	end
-end
+	Label.Size = UDim2.new(1, -5, 0, 30)
+	Label.BackgroundTransparency = 1
 
-local SpinningPlayers = {} -- [Player] = true
-local LaunchQueue = {} -- one-shot, handled in loop below
+	Label.Text = text
+	Label.TextColor3 = Color3.fromRGB(130, 130, 145)
+	Label.TextSize = 11
+	Label.Font = Enum.Font.GothamBold
+
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Parent = Content
+end
 
 --==================================================
--- NOCLIP / FLY LOOP (server authoritative)
+-- MOVEMENT
 --==================================================
 
-RunService.Heartbeat:Connect(function()
-	for player, state in pairs(PlayerState) do
-		local character = player.Character
-		if character then
-			if state.noclip then
-				for _, object in ipairs(character:GetDescendants()) do
-					if object:IsA("BasePart") then
-						object.CanCollide = false
-					end
-				end
-			end
+local function setFly(enabled)
 
-			if state.fly then
-				local humanoid, root = getParts(character)
-				if humanoid and root then
-					-- MoveDirection is a client-set property that replicates to the
-					-- server automatically, so this works without any LocalScript.
-					local moveDir = humanoid.MoveDirection
-					if moveDir.Magnitude > 0 then
-						root.AssemblyLinearVelocity = moveDir * 60
-					else
-						root.AssemblyLinearVelocity = Vector3.new(0, root.AssemblyLinearVelocity.Y * 0.9, 0)
-					end
-				end
-			end
+	FlyEnabled = enabled
 
-			if SpinningPlayers[player] then
-				local _, root = getParts(character)
-				if root then
-					root.CFrame = root.CFrame * CFrame.Angles(0, math.rad(8), 0)
-				end
+	if not enabled and Root then
+		Root.AssemblyLinearVelocity = Vector3.zero
+	end
+end
+
+local function setNoclip(enabled)
+	NoclipEnabled = enabled
+end
+
+local function setSpeed(enabled)
+
+	SpeedEnabled = enabled
+
+	if Humanoid then
+
+		Humanoid.WalkSpeed =
+			enabled and 50 or 16
+	end
+end
+
+local function setJump(enabled)
+
+	HighJumpEnabled = enabled
+
+	if Humanoid then
+
+		Humanoid.UseJumpPower = true
+
+		Humanoid.JumpPower =
+			enabled and 120 or 50
+	end
+end
+
+UserInputService.JumpRequest:Connect(function()
+
+	if InfiniteJumpEnabled and Humanoid then
+		Humanoid:ChangeState(
+			Enum.HumanoidStateType.Jumping
+		)
+	end
+end)
+
+RunService.Stepped:Connect(function()
+
+	if NoclipEnabled and Character then
+
+		for _, object in ipairs(Character:GetDescendants()) do
+
+			if object:IsA("BasePart") then
+				object.CanCollide = false
 			end
 		end
 	end
 end)
 
+RunService.RenderStepped:Connect(function()
+
+	if FlyEnabled and Root and Humanoid then
+
+		local Camera = workspace.CurrentCamera
+
+		local Direction = Vector3.zero
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+			Direction += Camera.CFrame.LookVector
+		end
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+			Direction -= Camera.CFrame.LookVector
+		end
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+			Direction -= Camera.CFrame.RightVector
+		end
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+			Direction += Camera.CFrame.RightVector
+		end
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+			Direction += Vector3.yAxis
+		end
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+			Direction -= Vector3.yAxis
+		end
+
+		Root.AssemblyLinearVelocity = Direction * 60
+	end
+end)
+
 --==================================================
--- LIGHTING PRESETS
+-- ESP
+--==================================================
+
+local function removeESP(PlayerObject)
+
+	if ESPObjects[PlayerObject] then
+		ESPObjects[PlayerObject]:Destroy()
+		ESPObjects[PlayerObject] = nil
+	end
+end
+
+local function addESP(PlayerObject)
+
+	if PlayerObject == Player then
+		return
+	end
+
+	local CharacterObject = PlayerObject.Character
+
+	if not CharacterObject then
+		return
+	end
+
+	removeESP(PlayerObject)
+
+	local Highlight = Instance.new("Highlight")
+
+	Highlight.Name = "AdminESP"
+	Highlight.FillTransparency = 0.7
+	Highlight.OutlineTransparency = 0
+
+	Highlight.Parent = CharacterObject
+
+	ESPObjects[PlayerObject] = Highlight
+end
+
+local function updateESP()
+
+	for _, PlayerObject in ipairs(Players:GetPlayers()) do
+
+		if ESPEnabled then
+			addESP(PlayerObject)
+		else
+			removeESP(PlayerObject)
+		end
+	end
+end
+
+Players.PlayerAdded:Connect(function(PlayerObject)
+
+	PlayerObject.CharacterAdded:Connect(function()
+
+		task.wait(0.5)
+
+		if ESPEnabled then
+			addESP(PlayerObject)
+		end
+	end)
+end)
+
+Players.PlayerRemoving:Connect(removeESP)
+
+--==================================================
+-- FULLBRIGHT
 --==================================================
 
 local OriginalLighting = {
@@ -227,19 +504,21 @@ local OriginalLighting = {
 	OutdoorAmbient = Lighting.OutdoorAmbient,
 }
 
-local function applyLightingPreset(name)
-	if name == "Fullbright" then
+local function setFullbright(enabled)
+
+	FullbrightEnabled = enabled
+
+	if enabled then
+
 		Lighting.Brightness = 3
 		Lighting.ClockTime = 14
 		Lighting.FogEnd = 100000
 		Lighting.GlobalShadows = false
 		Lighting.Ambient = Color3.new(1, 1, 1)
 		Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
-	elseif name == "Night" then
-		Lighting.ClockTime = 0
-	elseif name == "Noon" then
-		Lighting.ClockTime = 12
-	elseif name == "Reset" then
+
+	else
+
 		for property, value in pairs(OriginalLighting) do
 			Lighting[property] = value
 		end
@@ -247,561 +526,469 @@ local function applyLightingPreset(name)
 end
 
 --==================================================
--- CHAT / MODERATION
+-- TARGET
 --==================================================
 
-local function setMuted(player, muted)
-	MutedPlayers[player.UserId] = muted or nil
-	getState(player).muted = muted
-end
+local SelectedPlayer = nil
 
-local ok, TextChatService = pcall(function()
-	return game:GetService("TextChatService")
-end)
+local function getClosestPlayer()
 
-if ok and TextChatService and TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-	-- New chat system: channels are children of ChatChannels, not fired via a
-	-- "ChannelAdded" event (that event doesn't exist and previously crashed
-	-- this script before it ever reached Players.PlayerAdded).
-	local function hookChannel(channel)
-		if not channel:IsA("TextChannel") then
-			return
-		end
-		channel.ShouldDeliverCallback = function(message)
-			local senderPlayer = Players:GetPlayerByUserId(message.TextSource and message.TextSource.UserId or -1)
-			if senderPlayer and MutedPlayers[senderPlayer.UserId] then
-				return false
-			end
-			return true
-		end
+	local Closest = nil
+	local ClosestDistance = math.huge
+
+	if not Root then
+		return nil
 	end
 
-	local chatChannels = TextChatService:FindFirstChild("ChatChannels")
-	if chatChannels then
-		for _, channel in ipairs(chatChannels:GetChildren()) do
-			hookChannel(channel)
-		end
-		chatChannels.ChildAdded:Connect(hookChannel)
-	end
-end
+	for _, PlayerObject in ipairs(Players:GetPlayers()) do
 
---==================================================
--- SERVER-WIDE ACTIONS
---==================================================
+		if PlayerObject ~= Player
+			and PlayerObject.Character then
 
-local function announce(text)
-	for _, player in ipairs(Players:GetPlayers()) do
-		local playerGui = player:FindFirstChild("PlayerGui")
-		if playerGui then
-			local existing = playerGui:FindFirstChild("AdminAnnouncement")
-			if existing then
-				existing:Destroy()
-			end
+			local TargetRoot =
+				PlayerObject.Character:FindFirstChild(
+					"HumanoidRootPart"
+				)
 
-			local gui = Instance.new("ScreenGui")
-			gui.Name = "AdminAnnouncement"
-			gui.ResetOnSpawn = false
-			gui.IgnoreGuiInset = true
-			gui.Parent = playerGui
+			if TargetRoot then
 
-			local label = Instance.new("TextLabel")
-			label.Size = UDim2.new(1, 0, 0, 60)
-			label.Position = UDim2.new(0, 0, 0, 0)
-			label.BackgroundColor3 = Color3.fromRGB(17, 17, 23)
-			label.BackgroundTransparency = 0.1
-			label.TextColor3 = Color3.fromRGB(240, 240, 245)
-			label.TextSize = 20
-			label.Font = Enum.Font.GothamBold
-			label.Text = "[ANNOUNCEMENT] " .. text
-			label.TextWrapped = true
-			label.Parent = gui
+				local Distance =
+					(Root.Position - TargetRoot.Position).Magnitude
 
-			task.delay(8, function()
-				gui:Destroy()
-			end)
-		end
-	end
-end
+				if Distance < ClosestDistance then
 
-local function rejoinServer(player)
-	TeleportService:Teleport(game.PlaceId, player)
-end
-
---==================================================
--- GUI BUILDING (per-admin)
---==================================================
-
-local function clearContent(content)
-	for _, object in ipairs(content:GetChildren()) do
-		if not object:IsA("UIListLayout") and not object:IsA("UIPadding") then
-			object:Destroy()
-		end
-	end
-end
-
-local function makeButton(content, text, callback)
-	local button = Instance.new("TextButton")
-	button.Size = UDim2.new(1, -5, 0, 38)
-	button.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
-	button.BorderSizePixel = 0
-	button.Text = text
-	button.TextColor3 = Color3.fromRGB(235, 235, 240)
-	button.TextSize = 13
-	button.Font = Enum.Font.GothamMedium
-	button.Parent = content
-
-	Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
-
-	button.MouseEnter:Connect(function()
-		button.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
-	end)
-	button.MouseLeave:Connect(function()
-		button.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
-	end)
-	button.MouseButton1Click:Connect(callback)
-
-	return button
-end
-
-local function makeToggle(content, text, initial, callback)
-	local enabled = initial
-	local button = Instance.new("TextButton")
-	button.Size = UDim2.new(1, -5, 0, 38)
-	button.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
-	button.BorderSizePixel = 0
-	button.TextColor3 = Color3.fromRGB(235, 235, 240)
-	button.TextSize = 13
-	button.Font = Enum.Font.GothamMedium
-	button.Parent = content
-
-	Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
-
-	local function update()
-		button.Text = text .. "     [" .. (enabled and "ON" or "OFF") .. "]"
-		button.BackgroundColor3 = enabled and Color3.fromRGB(45, 75, 52) or Color3.fromRGB(32, 32, 42)
-	end
-	update()
-
-	button.MouseButton1Click:Connect(function()
-		enabled = not enabled
-		update()
-		callback(enabled)
-	end)
-
-	return button
-end
-
-local function makeSection(content, text)
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, -5, 0, 26)
-	label.BackgroundTransparency = 1
-	label.Text = text
-	label.TextColor3 = Color3.fromRGB(130, 130, 145)
-	label.TextSize = 11
-	label.Font = Enum.Font.GothamBold
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.Parent = content
-end
-
-local function makeTextBox(content, placeholder)
-	local box = Instance.new("TextBox")
-	box.Size = UDim2.new(1, -5, 0, 38)
-	box.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
-	box.BorderSizePixel = 0
-	box.PlaceholderText = placeholder
-	box.Text = ""
-	box.TextColor3 = Color3.fromRGB(235, 235, 240)
-	box.PlaceholderColor3 = Color3.fromRGB(110, 110, 120)
-	box.TextSize = 13
-	box.Font = Enum.Font.Gotham
-	box.ClearTextOnFocus = false
-	box.Parent = content
-
-	Instance.new("UICorner", box).CornerRadius = UDim.new(0, 6)
-	return box
-end
-
-local function buildGuiForAdmin(admin)
-	local playerGui = admin:WaitForChild("PlayerGui")
-
-	local old = playerGui:FindFirstChild("AdminPanel")
-	if old then
-		old:Destroy()
-	end
-
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "AdminPanel"
-	screenGui.ResetOnSpawn = false
-	screenGui.IgnoreGuiInset = true
-	screenGui.Parent = playerGui
-
-	local main = Instance.new("Frame")
-	main.Name = "Main"
-	main.Size = UDim2.fromOffset(760, 480)
-	main.Position = UDim2.new(0.5, -380, 0.5, -240)
-	main.BackgroundColor3 = Color3.fromRGB(17, 17, 23)
-	main.BorderSizePixel = 0
-	main.Visible = true
-	main.Parent = screenGui
-
-	Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(70, 70, 90)
-	stroke.Thickness = 1
-	stroke.Parent = main
-
-	local titleBar = Instance.new("Frame")
-	titleBar.Size = UDim2.new(1, 0, 0, 55)
-	titleBar.BackgroundColor3 = Color3.fromRGB(23, 23, 31)
-	titleBar.BorderSizePixel = 0
-	titleBar.Parent = main
-
-	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, -70, 1, 0)
-	title.Position = UDim2.fromOffset(20, 0)
-	title.BackgroundTransparency = 1
-	title.Text = "ADMIN // CONTROL"
-	title.TextColor3 = Color3.fromRGB(240, 240, 245)
-	title.TextSize = 19
-	title.Font = Enum.Font.GothamBold
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.Parent = titleBar
-
-	local closeButton = Instance.new("TextButton")
-	closeButton.Size = UDim2.fromOffset(40, 40)
-	closeButton.Position = UDim2.new(1, -48, 0, 7)
-	closeButton.BackgroundColor3 = Color3.fromRGB(38, 38, 48)
-	closeButton.BorderSizePixel = 0
-	closeButton.Text = "X"
-	closeButton.TextColor3 = Color3.fromRGB(230, 230, 235)
-	closeButton.TextSize = 14
-	closeButton.Font = Enum.Font.GothamBold
-	closeButton.Parent = titleBar
-	Instance.new("UICorner", closeButton).CornerRadius = UDim.new(0, 7)
-	closeButton.MouseButton1Click:Connect(function()
-		main.Visible = false
-	end)
-
-	-- Drag
-	local dragging, dragStart, startPos = false, nil, nil
-	titleBar.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			dragStart = input.Position
-			startPos = main.Position
-		end
-	end)
-	titleBar.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = false
-		end
-	end)
-	titleBar.InputChanged:Connect(function(input)
-		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-			local delta = input.Position - dragStart
-			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-		end
-	end)
-
-	-- Sidebar
-	local sidebar = Instance.new("Frame")
-	sidebar.Size = UDim2.fromOffset(160, 405)
-	sidebar.Position = UDim2.fromOffset(15, 65)
-	sidebar.BackgroundColor3 = Color3.fromRGB(22, 22, 29)
-	sidebar.BorderSizePixel = 0
-	sidebar.Parent = main
-	Instance.new("UICorner", sidebar).CornerRadius = UDim.new(0, 8)
-
-	local sidebarPadding = Instance.new("UIPadding")
-	sidebarPadding.PaddingTop = UDim.new(0, 10)
-	sidebarPadding.PaddingLeft = UDim.new(0, 10)
-	sidebarPadding.PaddingRight = UDim.new(0, 10)
-	sidebarPadding.Parent = sidebar
-
-	local sidebarLayout = Instance.new("UIListLayout")
-	sidebarLayout.Padding = UDim.new(0, 6)
-	sidebarLayout.Parent = sidebar
-
-	-- Content
-	local content = Instance.new("ScrollingFrame")
-	content.Size = UDim2.fromOffset(555, 405)
-	content.Position = UDim2.fromOffset(185, 65)
-	content.BackgroundColor3 = Color3.fromRGB(22, 22, 29)
-	content.BorderSizePixel = 0
-	content.ScrollBarThickness = 5
-	content.CanvasSize = UDim2.fromOffset(0, 0)
-	content.Parent = main
-	Instance.new("UICorner", content).CornerRadius = UDim.new(0, 8)
-
-	local contentPadding = Instance.new("UIPadding")
-	contentPadding.PaddingTop = UDim.new(0, 10)
-	contentPadding.PaddingBottom = UDim.new(0, 10)
-	contentPadding.PaddingLeft = UDim.new(0, 10)
-	contentPadding.PaddingRight = UDim.new(0, 10)
-	contentPadding.Parent = content
-
-	local contentLayout = Instance.new("UIListLayout")
-	contentLayout.Padding = UDim.new(0, 7)
-	contentLayout.Parent = content
-
-	contentLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-		content.CanvasSize = UDim2.fromOffset(0, contentLayout.AbsoluteContentSize.Y + 25)
-	end)
-
-	local selectedTarget = nil -- Player instance
-
-	local function createTab(name)
-		local button = Instance.new("TextButton")
-		button.Size = UDim2.new(1, 0, 0, 38)
-		button.BackgroundColor3 = Color3.fromRGB(31, 31, 41)
-		button.BorderSizePixel = 0
-		button.Text = name
-		button.TextColor3 = Color3.fromRGB(205, 205, 215)
-		button.TextSize = 12
-		button.Font = Enum.Font.GothamBold
-		button.Parent = sidebar
-		Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
-		return button
-	end
-
-	local function targetLabel()
-		return selectedTarget and (selectedTarget.Name) or "No target selected"
-	end
-
-	local currentTab = "PLAYERS"
-	local showTab -- forward declare
-
-	local function makePlayerPicker(content2)
-		makeSection(content2, "SELECT TARGET  (current: " .. targetLabel() .. ")")
-		for _, targetPlayer in ipairs(Players:GetPlayers()) do
-			makeButton(content2, "Target: " .. targetPlayer.Name, function()
-				selectedTarget = targetPlayer
-				showTab(currentTab)
-			end)
-		end
-	end
-
-	showTab = function(tab)
-		currentTab = tab
-		clearContent(content)
-
-		if tab == "PLAYERS" then
-			makePlayerPicker(content)
-
-			makeSection(content, "ACTIONS ON TARGET")
-			makeButton(content, "Heal", function()
-				if selectedTarget then healPlayer(selectedTarget) end
-			end)
-			makeButton(content, "Kill", function()
-				if selectedTarget then killPlayer(selectedTarget) end
-			end)
-			makeButton(content, "Respawn", function()
-				if selectedTarget then selectedTarget:LoadCharacter() end
-			end)
-			makeButton(content, "Kick", function()
-				if selectedTarget then kickPlayer(selectedTarget, "Removed by admin") end
-			end)
-			makeButton(content, "Ban (session)", function()
-				if selectedTarget then banPlayer(selectedTarget, "Banned by admin", admin.Name) end
-			end)
-			makeToggle(content, "Freeze", selectedTarget and getState(selectedTarget).frozen or false, function(enabled)
-				if selectedTarget then freezePlayer(selectedTarget, enabled) end
-			end)
-			makeToggle(content, "God Mode", selectedTarget and getState(selectedTarget).god or false, function(enabled)
-				if selectedTarget then setGod(selectedTarget, enabled) end
-			end)
-			makeToggle(content, "Noclip", selectedTarget and getState(selectedTarget).noclip or false, function(enabled)
-				if selectedTarget then setNoclip(selectedTarget, enabled) end
-			end)
-			makeToggle(content, "Fly", selectedTarget and getState(selectedTarget).fly or false, function(enabled)
-				if selectedTarget then getState(selectedTarget).fly = enabled end
-			end)
-			makeToggle(content, "Muted", selectedTarget and getState(selectedTarget).muted or false, function(enabled)
-				if selectedTarget then setMuted(selectedTarget, enabled) end
-			end)
-			makeButton(content, "Teleport Me To Target", function()
-				if selectedTarget then teleportPlayerToPlayer(admin, selectedTarget) end
-			end)
-			makeButton(content, "Bring Target To Me", function()
-				if selectedTarget then teleportPlayerToPlayer(selectedTarget, admin) end
-			end)
-			makeButton(content, "Launch Target", function()
-				if selectedTarget then
-					local _, root = getParts(selectedTarget.Character)
-					if root then root.AssemblyLinearVelocity = Vector3.new(0, 150, 0) end
+					ClosestDistance = Distance
+					Closest = PlayerObject
 				end
-			end)
-			makeButton(content, "Ragdoll Target", function()
-				if selectedTarget then ragdoll(selectedTarget) end
-			end)
-			makeToggle(content, "Spin Target", selectedTarget and SpinningPlayers[selectedTarget] or false, function(enabled)
-				if selectedTarget then SpinningPlayers[selectedTarget] = enabled or nil end
-			end)
-
-		elseif tab == "MOVEMENT_SELF" then
-			makeSection(content, "SELF MOVEMENT")
-			makeToggle(content, "Fly (uses WASD move direction)", getState(admin).fly, function(enabled)
-				getState(admin).fly = enabled
-			end)
-			makeToggle(content, "Noclip", getState(admin).noclip, function(enabled)
-				setNoclip(admin, enabled)
-			end)
-			makeToggle(content, "God Mode", getState(admin).god, function(enabled)
-				setGod(admin, enabled)
-			end)
-
-			makeSection(content, "SPEED")
-			for _, speed in ipairs({16, 30, 50, 80, 120}) do
-				makeButton(content, "WalkSpeed " .. speed, function()
-					setSpeed(admin, speed)
-				end)
 			end
-
-			makeSection(content, "JUMP")
-			for _, jump in ipairs({50, 80, 120, 200}) do
-				makeButton(content, "JumpPower " .. jump, function()
-					setJump(admin, jump)
-				end)
-			end
-
-			makeButton(content, "Reset Self", function()
-				getState(admin).fly = false
-				setNoclip(admin, false)
-				setGod(admin, false)
-				setSpeed(admin, 16)
-				setJump(admin, 50)
-			end)
-
-			makeButton(content, "Launch Myself", function()
-				local _, root = getParts(admin.Character)
-				if root then root.AssemblyLinearVelocity = Vector3.new(0, 150, 0) end
-			end)
-
-		elseif tab == "VISUALS" then
-			makeSection(content, "LIGHTING PRESETS")
-			makeButton(content, "Fullbright", function() applyLightingPreset("Fullbright") end)
-			makeButton(content, "Night", function() applyLightingPreset("Night") end)
-			makeButton(content, "Noon", function() applyLightingPreset("Noon") end)
-			makeButton(content, "Reset Lighting", function() applyLightingPreset("Reset") end)
-
-			makeSection(content, "CAMERA (self)")
-			makeButton(content, "FOV 70", function()
-				admin.CameraMaxZoomDistance = admin.CameraMaxZoomDistance -- noop guard
-				local cam = workspace.CurrentCamera
-				if cam then cam.FieldOfView = 70 end
-			end)
-			makeButton(content, "FOV 90", function()
-				local cam = workspace.CurrentCamera
-				if cam then cam.FieldOfView = 90 end
-			end)
-			makeButton(content, "FOV 120", function()
-				local cam = workspace.CurrentCamera
-				if cam then cam.FieldOfView = 120 end
-			end)
-
-		elseif tab == "SERVER" then
-			makeSection(content, "ANNOUNCEMENT")
-			local box = makeTextBox(content, "Type announcement text...")
-			makeButton(content, "Send Announcement", function()
-				if box.Text ~= "" then
-					announce(box.Text)
-				end
-			end)
-
-			makeSection(content, "SERVER ACTIONS")
-			makeButton(content, "Rejoin Server (self)", function()
-				rejoinServer(admin)
-			end)
-			makeButton(content, "Kick All Non-Admins", function()
-				for _, targetPlayer in ipairs(Players:GetPlayers()) do
-					if not isAdmin(targetPlayer) then
-						kickPlayer(targetPlayer, "Server cleared by admin")
-					end
-				end
-			end)
-
-			makeSection(content, "PLAYER LIST")
-			for _, listedPlayer in ipairs(Players:GetPlayers()) do
-				local tag = isAdmin(listedPlayer) and " [ADMIN]" or ""
-				makeSection(content, listedPlayer.Name .. tag .. "  |  UserId: " .. listedPlayer.UserId)
-			end
-
-		elseif tab == "BANS" then
-			makeSection(content, "SESSION BAN LIST")
-			local any = false
-			for userId, info in pairs(BannedUserIds) do
-				any = true
-				makeButton(content, "Unban " .. userId .. " (" .. info.reason .. ")", function()
-					BannedUserIds[userId] = nil
-				end)
-			end
-			if not any then
-				makeSection(content, "No active bans this session.")
-			end
-			makeSection(content, "Note: this ban list is session-only. For persistent bans across")
-			makeSection(content, "server restarts, wire this table up to a DataStore.")
 		end
 	end
 
-	local movementTab = createTab("PLAYERS")
-	local movementSelfTab = createTab("SELF")
-	local visualsTab = createTab("VISUALS")
-	local serverTab = createTab("SERVER")
-	local bansTab = createTab("BANS")
-
-	movementTab.MouseButton1Click:Connect(function() showTab("PLAYERS") end)
-	movementSelfTab.MouseButton1Click:Connect(function() showTab("MOVEMENT_SELF") end)
-	visualsTab.MouseButton1Click:Connect(function() showTab("VISUALS") end)
-	serverTab.MouseButton1Click:Connect(function() showTab("SERVER") end)
-	bansTab.MouseButton1Click:Connect(function() showTab("BANS") end)
-
-	showTab("PLAYERS")
+	return Closest
 end
 
---==================================================
--- PLAYER CONNECTIONS
---==================================================
+local function teleportTo(PlayerObject)
 
-local function onPlayerAdded(player)
-	if BannedUserIds[player.UserId] then
-		player:Kick("[ADMIN] You are banned. Reason: " .. BannedUserIds[player.UserId].reason)
+	if not PlayerObject
+		or not PlayerObject.Character
+		or not Root then
 		return
 	end
 
-	getState(player)
+	local TargetRoot =
+		PlayerObject.Character:FindFirstChild(
+			"HumanoidRootPart"
+		)
 
-	player.CharacterAdded:Connect(function(character)
-		task.wait(0.2)
-		local state = getState(player)
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if humanoid then
-			humanoid.WalkSpeed = state.frozen and 0 or state.walkspeed
-			humanoid.UseJumpPower = true
-			humanoid.JumpPower = state.frozen and 0 or state.jumppower
-			if state.god then
-				humanoid.MaxHealth = math.huge
-				humanoid.Health = math.huge
-			end
-		end
-		local root = character:FindFirstChild("HumanoidRootPart")
-		if root then
-			root.Anchored = state.frozen
-		end
-	end)
+	if TargetRoot then
 
-	if isAdmin(player) then
-		buildGuiForAdmin(player)
+		Root.CFrame =
+			TargetRoot.CFrame *
+			CFrame.new(0, 0, 4)
 	end
 end
 
-Players.PlayerAdded:Connect(onPlayerAdded)
-for _, player in ipairs(Players:GetPlayers()) do
-	task.spawn(onPlayerAdded, player)
+--==================================================
+-- TABS
+--==================================================
+
+local function createTab(name)
+
+	local Button = Instance.new("TextButton")
+
+	Button.Size = UDim2.new(1, 0, 0, 38)
+	Button.BackgroundColor3 = Color3.fromRGB(31, 31, 41)
+	Button.BorderSizePixel = 0
+
+	Button.Text = name
+	Button.TextColor3 = Color3.fromRGB(205, 205, 215)
+	Button.TextSize = 12
+	Button.Font = Enum.Font.GothamBold
+
+	Button.Parent = Sidebar
+
+	Instance.new("UICorner", Button).CornerRadius = UDim.new(0, 6)
+
+	return Button
 end
 
-Players.PlayerRemoving:Connect(function(player)
-	PlayerState[player] = nil
-	SpinningPlayers[player] = nil
+local function showTab(tab)
+
+	clearContent()
+
+	-- MOVEMENT
+	if tab == "MOVEMENT" then
+
+		makeSection("MOVEMENT")
+
+		makeToggle("Fly", false, setFly)
+
+		makeToggle("Noclip", false, setNoclip)
+
+		makeToggle("Infinite Jump", false, function(enabled)
+			InfiniteJumpEnabled = enabled
+		end)
+
+		makeToggle("Speed Boost", false, setSpeed)
+
+		makeToggle("High Jump", false, setJump)
+
+		makeToggle("Spin", false, function(enabled)
+			SpinEnabled = enabled
+		end)
+
+		makeButton("Launch", function()
+
+			if Root then
+				Root.AssemblyLinearVelocity =
+					Vector3.new(0, 150, 0)
+			end
+		end)
+
+		makeButton("Reset Movement", function()
+
+			FlyEnabled = false
+			NoclipEnabled = false
+			InfiniteJumpEnabled = false
+			SpeedEnabled = false
+			HighJumpEnabled = false
+			SpinEnabled = false
+
+			if Humanoid then
+				Humanoid.WalkSpeed = 16
+				Humanoid.JumpPower = 50
+			end
+
+			if Root then
+				Root.AssemblyLinearVelocity = Vector3.zero
+			end
+		end)
+
+	-- VISUALS
+	elseif tab == "VISUALS" then
+
+		makeSection("VISUALS")
+
+		makeToggle("Player ESP", ESPEnabled, function(enabled)
+
+			ESPEnabled = enabled
+			updateESP()
+		end)
+
+		makeToggle("Fullbright", false, setFullbright)
+
+		makeToggle("Big Head", false, function(enabled)
+
+			BigHeadEnabled = enabled
+
+			if Character then
+
+				local Head =
+					Character:FindFirstChild("Head")
+
+				if Head then
+
+					Head.Size =
+						enabled
+						and Vector3.new(3, 3, 3)
+						or Vector3.new(2, 1, 1)
+				end
+			end
+		end)
+
+		makeButton("FOV 70", function()
+			workspace.CurrentCamera.FieldOfView = 70
+		end)
+
+		makeButton("FOV 90", function()
+			workspace.CurrentCamera.FieldOfView = 90
+		end)
+
+		makeButton("FOV 120", function()
+			workspace.CurrentCamera.FieldOfView = 120
+		end)
+
+		makeButton("Reset FOV", function()
+			workspace.CurrentCamera.FieldOfView = 70
+		end)
+
+	-- PLAYER
+	elseif tab == "PLAYER" then
+
+		makeSection("PLAYER")
+
+		makeButton("Heal", function()
+
+			if Humanoid then
+				Humanoid.Health = Humanoid.MaxHealth
+			end
+		end)
+
+		makeButton("Reset Character", function()
+
+			if Humanoid then
+				Humanoid.Health = 0
+			end
+		end)
+
+		makeButton("Sit", function()
+
+			if Humanoid then
+				Humanoid.Sit = true
+			end
+		end)
+
+		makeButton("Stand", function()
+
+			if Humanoid then
+				Humanoid.Sit = false
+			end
+		end)
+
+		makeButton("Launch Yourself", function()
+
+			if Root then
+				Root.AssemblyLinearVelocity =
+					Vector3.new(0, 150, 0)
+			end
+		end)
+
+	-- TARGET
+	elseif tab == "TARGET" then
+
+		makeSection("TARGET PLAYER")
+
+		makeButton("Select Closest Player", function()
+
+			SelectedPlayer = getClosestPlayer()
+
+			if SelectedPlayer then
+				warn(
+					"[ADMIN] Selected:",
+					SelectedPlayer.Name
+				)
+			end
+		end)
+
+		makeButton("Teleport To Target", function()
+
+			teleportTo(
+				SelectedPlayer
+				or getClosestPlayer()
+			)
+		end)
+
+		makeButton("Teleport To Closest", function()
+
+			teleportTo(
+				getClosestPlayer()
+			)
+		end)
+
+		makeButton("Refresh Target", function()
+
+			SelectedPlayer = getClosestPlayer()
+
+			if SelectedPlayer then
+				warn(
+					"[ADMIN] Target:",
+					SelectedPlayer.Name
+				)
+			end
+		end)
+
+	-- CAMERA
+	elseif tab == "CAMERA" then
+
+		makeSection("CAMERA")
+
+		makeButton("FOV 70", function()
+			workspace.CurrentCamera.FieldOfView = 70
+		end)
+
+		makeButton("FOV 90", function()
+			workspace.CurrentCamera.FieldOfView = 90
+		end)
+
+		makeButton("FOV 120", function()
+			workspace.CurrentCamera.FieldOfView = 120
+		end)
+
+		makeButton("Reset Camera", function()
+
+			workspace.CurrentCamera.FieldOfView = 70
+
+			if Humanoid then
+				workspace.CurrentCamera.CameraSubject =
+					Humanoid
+			end
+		end)
+
+	-- TROLL
+	elseif tab == "TROLL" then
+
+		makeSection("FUN / TROLL")
+
+		makeToggle("Spin", false, function(enabled)
+			SpinEnabled = enabled
+		end)
+
+		makeButton("Ragdoll", function()
+
+			if Humanoid then
+
+				Humanoid:ChangeState(
+					Enum.HumanoidStateType.Physics
+				)
+
+				task.delay(3, function()
+
+					if Humanoid then
+
+						Humanoid:ChangeState(
+							Enum.HumanoidStateType.GettingUp
+						)
+					end
+				end)
+			end
+		end)
+
+		makeButton("Launch Yourself", function()
+
+			if Root then
+				Root.AssemblyLinearVelocity =
+					Vector3.new(0, 150, 0)
+			end
+		end)
+
+		makeButton("Sit", function()
+
+			if Humanoid then
+				Humanoid.Sit = true
+			end
+		end)
+
+		makeButton("Stand", function()
+
+			if Humanoid then
+				Humanoid.Sit = false
+			end
+		end)
+
+	-- SERVER
+	elseif tab == "SERVER" then
+
+		makeSection("SERVER")
+
+		makeButton("Rejoin Server", function()
+
+			game:GetService("TeleportService"):Teleport(
+				game.PlaceId,
+				Player
+			)
+		end)
+
+		makeButton("Respawn", function()
+
+			Player:LoadCharacter()
+		end)
+
+		makeButton("Reset Character", function()
+
+			if Humanoid then
+				Humanoid.Health = 0
+			end
+		end)
+	end
+end
+
+--==================================================
+-- CREATE TABS
+--==================================================
+
+local MovementTab = createTab("MOVEMENT")
+local VisualTab = createTab("VISUALS")
+local PlayerTab = createTab("PLAYER")
+local TargetTab = createTab("TARGET")
+local TrollTab = createTab("TROLL")
+local CameraTab = createTab("CAMERA")
+local ServerTab = createTab("SERVER")
+
+MovementTab.MouseButton1Click:Connect(function()
+	showTab("MOVEMENT")
 end)
 
-print("[ADMIN PANEL] Server-side admin system loaded.")
+VisualTab.MouseButton1Click:Connect(function()
+	showTab("VISUALS")
+end)
+
+PlayerTab.MouseButton1Click:Connect(function()
+	showTab("PLAYER")
+end)
+
+TargetTab.MouseButton1Click:Connect(function()
+	showTab("TARGET")
+end)
+
+TrollTab.MouseButton1Click:Connect(function()
+	showTab("TROLL")
+end)
+
+CameraTab.MouseButton1Click:Connect(function()
+	showTab("CAMERA")
+end)
+
+ServerTab.MouseButton1Click:Connect(function()
+	showTab("SERVER")
+end)
+
+--==================================================
+-- SPIN
+--==================================================
+
+RunService.RenderStepped:Connect(function()
+
+	if SpinEnabled and Root then
+
+		Root.CFrame =
+			Root.CFrame *
+			CFrame.Angles(0, math.rad(8), 0)
+	end
+end)
+
+--==================================================
+-- KEYBINDS
+--==================================================
+
+UserInputService.InputBegan:Connect(function(input, processed)
+
+	if processed then
+		return
+	end
+
+	if input.KeyCode == Enum.KeyCode.RightShift then
+
+		Main.Visible = not Main.Visible
+
+	elseif input.KeyCode == Enum.KeyCode.F then
+
+		setFly(not FlyEnabled)
+
+	elseif input.KeyCode == Enum.KeyCode.N then
+
+		setNoclip(not NoclipEnabled)
+
+	elseif input.KeyCode == Enum.KeyCode.G then
+
+		ESPEnabled = not ESPEnabled
+		updateESP()
+	end
+end)
+
+--==================================================
+-- DEFAULT PAGE
+--==================================================
+
+showTab("MOVEMENT")
+
+print("[ADMIN PANEL] Loaded successfully for " .. Player.Name)
