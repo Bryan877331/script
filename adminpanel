@@ -255,10 +255,18 @@ local function setMuted(player, muted)
 	getState(player).muted = muted
 end
 
-local TextChatService = game:GetService("TextChatService")
-if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-	-- New chat system: block muted players via SendingMessage on TextChannels
-	TextChatService.ChannelAdded:Connect(function(channel)
+local ok, TextChatService = pcall(function()
+	return game:GetService("TextChatService")
+end)
+
+if ok and TextChatService and TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+	-- New chat system: channels are children of ChatChannels, not fired via a
+	-- "ChannelAdded" event (that event doesn't exist and previously crashed
+	-- this script before it ever reached Players.PlayerAdded).
+	local function hookChannel(channel)
+		if not channel:IsA("TextChannel") then
+			return
+		end
 		channel.ShouldDeliverCallback = function(message)
 			local senderPlayer = Players:GetPlayerByUserId(message.TextSource and message.TextSource.UserId or -1)
 			if senderPlayer and MutedPlayers[senderPlayer.UserId] then
@@ -266,7 +274,15 @@ if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 			end
 			return true
 		end
-	end)
+	end
+
+	local chatChannels = TextChatService:FindFirstChild("ChatChannels")
+	if chatChannels then
+		for _, channel in ipairs(chatChannels:GetChildren()) do
+			hookChannel(channel)
+		end
+		chatChannels.ChildAdded:Connect(hookChannel)
+	end
 end
 
 --==================================================
